@@ -34,13 +34,15 @@ const
   MaxDigit   = High(TDigit);
   { Константа для количества бит, используется в некоторых алгоритмах. }
   DIGIT_BITS = 32;
-  { Размер блока для преобразования из строки. Число 10^9 - последнее, умещающе
-еся в TDigit. }
+  { Размер блока для преобразования из строки. Число 10^9 - последнее, умещающееся в TDigit. }
   BlockSize = 9;
-  { Предварительно вычисленные степени 10 для ускорения преобразования из строк
-и. }
+  { Предварительно вычисленные степени 10 для ускорения преобразования из строки. }
   PowersOf10: array[1..BlockSize] of TDigit =
     (10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000);
+  { Стандартный префикс для шестнадцатеричного представления. }
+  HexPrefix = '$';
+  { Стандартный префикс для двоичного представления. }
+  BinPrefix = '%';
 
 type
   {
@@ -253,6 +255,87 @@ procedure BigIntDivMod(var q, r: TBigInt; const u, v: TBigInt); forward;
 procedure _BigIntAddAbs_Unsafe(var res: TBigInt; const a, b: TBigInt); forward;
 procedure _BigIntSubAbs_Unsafe(var res: TBigInt; const a, b: TBigInt); forward;
 procedure BigIntSqr_School(var res: TBigInt; const a: TBigInt); forward;
+
+{
+  ===========================================================================
+  ЦЕНТРАЛИЗОВАННЫЕ HELPER-ФУНКЦИИ ДЛЯ ОПТИМИЗАЦИИ
+  ===========================================================================
+  Эти функции предоставляют общий интерфейс для проверки размера чисел
+  и управления памятью, что позволяет реализовать "быстрые пути" (fast-path)
+  для операций с малыми числами без дублирования кода.
+}
+
+{
+  IsSmallBigInt - проверяет, умещается ли TBigInt в 64-битный диапазон.
+  Возвращает True если число может быть преобразовано в Int64 или UInt64
+  без потери данных. Используется для выбора fast-path в арифметических операциях.
+}
+function IsSmallBigInt(const a: TBigInt): boolean; inline;
+begin
+  Result := (not Assigned(a.Digits)) or (a.Length <= 2);
+end;
+
+{
+  IsZeroBigInt - быстрая проверка на ноль.
+  Более эффективна чем полное сравнение для частого случая.
+}
+function IsZeroBigInt(const a: TBigInt): boolean; inline;
+begin
+  Result := (not Assigned(a.Digits)) or (a.Sign = 0);
+end;
+
+{
+  EnsureCapacity - гарантирует, что буфер имеет достаточную ёмкость.
+  В отличие от SetIntLength, не изменяет поле Length.
+  Используется для подготовки буфера перед операциями in-place.
+}
+procedure EnsureCapacity(var a: TBigInt; minCapacity: SizeInt);
+var
+  currentCapacity, newCapacity: SizeInt;
+begin
+  currentCapacity := System.Length(a.Digits);
+  if minCapacity <= currentCapacity then Exit;
+
+  newCapacity := currentCapacity;
+  if newCapacity = 0 then
+    newCapacity := MIN_ALLOCATED_LIMBS;
+  while newCapacity < minCapacity do
+  begin
+    if newCapacity > 256 then
+      newCapacity := newCapacity + (newCapacity div 2)
+    else
+      newCapacity := newCapacity * 2;
+  end;
+  System.SetLength(a.Digits, newCapacity);
+end;
+
+{
+  ShrinkToFit - уменьшает буфер до оптимального размера.
+  Вызывается после операций, которые могли значительно уменьшить число.
+  Параметр keepSlack позволяет сохранить небольшой запас для будущих операций.
+}
+procedure ShrinkToFit(var a: TBigInt; keepSlack: SizeInt = 4);
+var
+  currentCapacity, targetCapacity: SizeInt;
+begin
+  currentCapacity := System.Length(a.Digits);
+  if a.Length + keepSlack >= currentCapacity then Exit;
+  if a.Length < 16 then Exit;
+  
+  targetCapacity := a.Length + keepSlack;
+  if targetCapacity < MIN_ALLOCATED_LIMBS then
+    targetCapacity := MIN_ALLOCATED_LIMBS;
+  
+  if currentCapacity > targetCapacity * 4 then
+    System.SetLength(a.Digits, targetCapacity);
+end;
+
+
+{
+  ===========================================================================
+  КОНЕЦ ЦЕНТРАЛИЗОВАННЫХ HELPER-ФУНКЦИЙ
+  ===========================================================================
+}
 
 {
   --- Реализация методов и операторов для TBigInt ---
@@ -1413,10 +1496,21 @@ begin
 end;
 
 {
-  Сложение двух TBigInt с учётом знака.
-  - Использует быстрый путь для Int64, если возможно.
-  - Если знаки одинаковые, складывает модули.
-  - Если знаки разные, вычитает модуль меньшего из большего.
+  ===========================================================================
+  BigIntAdd - Сложение двух TBigInt с учётом знака
+  ===========================================================================
+  
+  АЛГОРИТМ:
+  1. Специальные случаи: a + a (удвоение через сдвиг), нулевые операнды
+  2. Fast-path: если оба операнда помещаются в Int64 и результат не переполняется
+  3. Полный путь: сложение/вычитание модулей в зависимости от знаков
+  
+  ОБРАБОТКА АЛИАСИНГА:
+  - res = a: результат записывается во временный буфер, затем копируется
+  - res = b: аналогично
+  - a = b: удвоение через BigIntSHL (a + a = a * 2 = a << 1)
+  
+  СЛОЖНОСТЬ: O(max(n, m)) где n, m - длины операндов в разрядах
 }
 procedure BigIntAdd(var res: TBigInt; const a_in, b_in: TBigInt);
 var
@@ -1425,13 +1519,15 @@ var
   valA, valB: int64;
   p_res: ^TBigInt;
 begin
-  // Оптимизация для a + a -> a * 2
+  // ОПТИМИЗАЦИЯ 1: a + a -> a << 1 (удвоение через сдвиг - быстрее умножения)
   if @a_in = @b_in then
   begin
     BigIntSHL(res, a_in, 1);
     Exit;
   end;
 
+  // ОБРАБОТКА АЛИАСИНГА: если результат совпадает с одним из операндов,
+  // используем временный буфер для избежания перезаписи входных данных
   if (@res = @a_in) or (@res = @b_in) then
   begin
     temp.Init;
@@ -1442,24 +1538,30 @@ begin
     p_res := @res;
   end;
 
-  if TryBigIntToInt64(a_in, valA) and TryBigIntToInt64(b_in, valB) then
+  // FAST-PATH: если оба операнда малые (помещаются в Int64)
+  if IsSmallBigInt(a_in) and IsSmallBigInt(b_in) then
   begin
-    if not ((valA > 0) and (valB > 0) and (valA > High(int64) - valB)) and
-      not ((valA < 0) and (valB < 0) and (valA < Low(int64) - valB)) then
+    if TryBigIntToInt64(a_in, valA) and TryBigIntToInt64(b_in, valB) then
     begin
-      BigIntFromInt64(p_res^, valA + valB);
-      if p_res = @temp then BigIntCopy(res, temp);
-      Exit;
+      // Проверка переполнения при сложении
+      if not ((valA > 0) and (valB > 0) and (valA > High(int64) - valB)) and
+        not ((valA < 0) and (valB < 0) and (valA < Low(int64) - valB)) then
+      begin
+        BigIntFromInt64(p_res^, valA + valB);
+        if p_res = @temp then BigIntCopy(res, temp);
+        Exit;
+      end;
     end;
   end;
 
-  if not Assigned(a_in.Digits) or (a_in.Sign = 0) then
+  // ОПТИМИЗАЦИЯ 2: a + 0 = a, 0 + b = b
+  if IsZeroBigInt(a_in) then
   begin
     BigIntCopy(p_res^, b_in);
     if p_res = @temp then BigIntCopy(res, temp);
     Exit;
   end;
-  if not Assigned(b_in.Digits) or (b_in.Sign = 0) then
+  if IsZeroBigInt(b_in) then
   begin
     BigIntCopy(p_res^, a_in);
     if p_res = @temp then BigIntCopy(res, temp);
@@ -1497,10 +1599,20 @@ begin
 end;
 
 {
-  Вычитание двух TBigInt с учётом знака.
-  - Использует быстрый путь для Int64, если возможно.
-  - Сводится к сложению, если знаки разные (a - (-b) = a + b).
-  - Если знаки одинаковые, вычитает модули.
+  ===========================================================================
+  BigIntSub - Вычитание двух TBigInt с учётом знака
+  ===========================================================================
+  
+  АЛГОРИТМ:
+  1. Специальные случаи: a - a = 0, нулевые операнды
+  2. Fast-path: если оба операнда помещаются в Int64 и результат не переполняется
+  3. Полный путь: a - (-b) = a + b, иначе вычитание модулей
+  
+  ОБРАБОТКА АЛИАСИНГА:
+  - res = a или res = b: временный буфер
+  - a = b: результат = 0
+  
+  СЛОЖНОСТЬ: O(max(n, m)) где n, m - длины операндов в разрядах
 }
 procedure BigIntSub(var res: TBigInt; const a, b: TBigInt);
 var
@@ -1509,13 +1621,14 @@ var
   valA, valB: int64;
   p_res: ^TBigInt;
 begin
-  // Оптимизация для a - a -> 0
+  // ОПТИМИЗАЦИЯ 1: a - a = 0
   if @a = @b then
   begin
     BigIntFromInt64(res, 0);
     Exit;
   end;
 
+  // ОБРАБОТКА АЛИАСИНГА
   if (@res = @a) or (@res = @b) then
   begin
     temp.Init;
@@ -1526,25 +1639,32 @@ begin
     p_res := @res;
   end;
 
-  if TryBigIntToInt64(a, valA) and TryBigIntToInt64(b, valB) then
+  // FAST-PATH: если оба операнда малые
+  if IsSmallBigInt(a) and IsSmallBigInt(b) then
   begin
-    if not ((valA > 0) and (valB < 0) and (valA > High(int64) + valB)) and
-      not ((valA < 0) and (valB > 0) and (valA < Low(int64) + valB)) then
+    if TryBigIntToInt64(a, valA) and TryBigIntToInt64(b, valB) then
     begin
-      BigIntFromInt64(p_res^, valA - valB);
-      if p_res = @temp then BigIntCopy(res, temp);
-      Exit;
+      // Проверка переполнения при вычитании
+      if not ((valA > 0) and (valB < 0) and (valA > High(int64) + valB)) and
+        not ((valA < 0) and (valB > 0) and (valA < Low(int64) + valB)) then
+      begin
+        BigIntFromInt64(p_res^, valA - valB);
+        if p_res = @temp then BigIntCopy(res, temp);
+        Exit;
+      end;
     end;
   end;
 
-  if not Assigned(b.Digits) or (b.Sign = 0) then
+  // ОПТИМИЗАЦИЯ 2: a - 0 = a
+  if IsZeroBigInt(b) then
   begin
     BigIntCopy(p_res^, a);
     if p_res = @temp then BigIntCopy(res, temp);
     Exit;
   end;
 
-  if not Assigned(a.Digits) or (a.Sign = 0) then
+  // ОПТИМИЗАЦИЯ 3: 0 - b = -b
+  if IsZeroBigInt(a) then
   begin
     BigIntCopy(p_res^, b);
     p_res^.Sign := -b.Sign;
@@ -1735,11 +1855,26 @@ begin
 end;
 
 {
-  Основная процедура умножения.
-  - Выбирает алгоритм в зависимости от размера чисел:
-    - Быстрый путь для Int64.
-    - Школьное умножение для маленьких чисел.
-    - Алгоритм Карацубы для больших чисел (более эффективен асимптотически).
+  ===========================================================================
+  BigIntMul - Умножение двух TBigInt
+  ===========================================================================
+  
+  АЛГОРИТМ:
+  1. a * a: используется оптимизированное возведение в квадрат (BigIntSqr_School)
+  2. a * 0 или 0 * b: результат = 0
+  3. Fast-path: если оба операнда помещаются в Int64 и результат не переполняется
+  4. Школьное умножение: для чисел < 32 разрядов, O(n*m)
+  5. Алгоритм Карацубы: для больших чисел, O(n^1.585)
+  
+  ОБРАБОТКА АЛИАСИНГА:
+  - a = b: вызывается BigIntSqr_School (оптимизированный квадрат)
+  - res = a или res = b: обрабатывается внутри BigIntMul_School/Karatsuba
+  
+  ПОРОГ КАРАЦУБЫ: 32 разряда (128 байт = 1024 бита)
+  
+  СЛОЖНОСТЬ:
+  - Малые числа: O(n*m) - школьное умножение
+  - Большие числа: O(n^1.585) - алгоритм Карацубы
 }
 procedure BigIntMul(var res: TBigInt; const a, b: TBigInt);
 const
@@ -1747,17 +1882,18 @@ const
 var
   valA, valB: int64;
 begin
-  // Оптимизация для a * a
+  // ОПТИМИЗАЦИЯ 1: a * a -> возведение в квадрат (экономит ~50% операций)
   if @a = @b then
   begin
     if (a.Length < KARATSUBA_THRESHOLD) then
       BigIntSqr_School(res, a)
     else
-      BigIntMulKaratsuba(res, a, a); // Карацуба для квадрата тоже эффективна
+      BigIntMulKaratsuba(res, a, a);
     Exit;
   end;
 
-  if (a.Sign = 0) or (b.Sign = 0) or not Assigned(a.Digits) or not Assigned(b.Digits) then
+  // ОПТИМИЗАЦИЯ 2: умножение на ноль
+  if IsZeroBigInt(a) or IsZeroBigInt(b) then
   begin
     SetIntLength(res, 1);
     res.Digits[0] := 0;
@@ -1765,18 +1901,24 @@ begin
     Exit;
   end;
 
-  if TryBigIntToInt64(a, valA) and TryBigIntToInt64(b, valB) then
+  // FAST-PATH: если оба операнда малые
+  if IsSmallBigInt(a) and IsSmallBigInt(b) then
   begin
-    if not ((valA > 0) and (valB > 0) and (valA > High(int64) div valB)) and
-      not ((valA < 0) and (valB < 0) and (valA < High(int64) div valB)) and
-      not ((valA > 0) and (valB < 0) and (valB < Low(int64) div valA)) and
-      not ((valA < 0) and (valB > 0) and (valA < Low(int64) div valB)) then
+    if TryBigIntToInt64(a, valA) and TryBigIntToInt64(b, valB) then
     begin
-      BigIntFromInt64(res, valA * valB);
-      Exit;
+      // Проверка переполнения при умножении
+      if not ((valA > 0) and (valB > 0) and (valA > High(int64) div valB)) and
+        not ((valA < 0) and (valB < 0) and (valA < High(int64) div valB)) and
+        not ((valA > 0) and (valB < 0) and (valB < Low(int64) div valA)) and
+        not ((valA < 0) and (valB > 0) and (valA < Low(int64) div valB)) then
+      begin
+        BigIntFromInt64(res, valA * valB);
+        Exit;
+      end;
     end;
   end;
 
+  // ВЫБОР АЛГОРИТМА по размеру операндов
   if (a.Length < KARATSUBA_THRESHOLD) or (b.Length < KARATSUBA_THRESHOLD) then
   begin
     BigIntMul_School(res, a, b);
@@ -2050,7 +2192,7 @@ end;
 function BigIntToBasePow2Str(const a: TBigInt; bitsPerChar: cardinal; const chars: string): string;
 var
   totalBits, i, charCount, bitIndex: integer;
-  digit, mask, currentDigitValue: TDigit;
+  digit, currentDigitValue: TDigit;
   bitsInCurrent, charIndex: integer;
   temp: TBigInt;
   resStr: string;
@@ -2436,37 +2578,55 @@ begin
 end;
 
 {
-  Основная процедура деления.
-  - Использует быстрый путь для Int64, если возможно.
-  - В противном случае вызывает деление по Кнуту.
+  ===========================================================================
+  BigIntDivMod - Деление с остатком двух TBigInt
+  ===========================================================================
+  
+  АЛГОРИТМ:
+  1. Fast-path: если оба операнда помещаются в Int64
+  2. Деление на ноль: q = 0, r = u (поведение для совместимости)
+  3. Специальный случай: Low(Int64) / -1 = 2^63 (переполнение Int64)
+  4. Полный путь: алгоритм Кнута (Algorithm D из TAOCP)
+  
+  СЕМАНТИКА:
+  - Результат: u = q * v + r
+  - Знак остатка совпадает со знаком делимого (u)
+  
+  СЛОЖНОСТЬ: O(n*m) где n - длина делимого, m - длина делителя
 }
 procedure BigIntDivMod(var q, r: TBigInt; const u, v: TBigInt);
 var
   u_val, v_val: int64;
 begin
-  if TryBigIntToInt64(u, u_val) and TryBigIntToInt64(v, v_val) then
+  // FAST-PATH: если оба операнда малые
+  if IsSmallBigInt(u) and IsSmallBigInt(v) then
   begin
-    if v_val = 0 then
+    if TryBigIntToInt64(u, u_val) and TryBigIntToInt64(v, v_val) then
     begin
-      BigIntFromInt64(q, 0);
-      BigIntCopy(r, u);
+      // Деление на ноль - возвращаем q=0, r=u
+      if v_val = 0 then
+      begin
+        BigIntFromInt64(q, 0);
+        BigIntCopy(r, u);
+        Exit;
+      end;
+
+      // Специальный случай: Low(Int64) / -1 = 2^63 (не помещается в Int64)
+      if (u_val = Low(int64)) and (v_val = -1) then
+      begin
+        BigIntFromStr(q, '9223372036854775808');
+        BigIntFromInt64(r, 0);
+        Exit;
+      end;
+
+      BigIntFromInt64(q, u_val div v_val);
+      BigIntFromInt64(r, u_val mod v_val);
       Exit;
     end;
-
-    if (u_val = Low(int64)) and (v_val = -1) then
-    begin
-      BigIntFromStr(q, '9223372036854775808');
-      BigIntFromInt64(r, 0);
-      Exit;
-    end;
-
-    BigIntFromInt64(q, u_val div v_val);
-    BigIntFromInt64(r, u_val mod v_val);
-  end
-  else
-  begin
-    BigIntDivModKnuth(q, r, u, v);
   end;
+  
+  // ПОЛНЫЙ ПУТЬ: алгоритм Кнута
+  BigIntDivModKnuth(q, r, u, v);
 end;
 
 {
@@ -2790,7 +2950,6 @@ var
   totalBits: integer;
   powerOf2: TBigInt;
   val: Int64;
-  isSmall: boolean;
 begin
   BigIntInit(a);
   BigIntInit(digitB);
@@ -2913,7 +3072,7 @@ var
   p_temp: PChar;
   isNegative: boolean;
 begin
-  BigIntInit(Result);
+  Result.Init;
   ResAddr := P;
   if (P = nil) or (P^ = #0) then
   begin
@@ -2937,7 +3096,7 @@ begin
 
   if not _ScanNumber(p_temp, 10, startPtr, endPtr, charCount) then
   begin
-    BigIntInit(Result);
+    Result.Init;
     Exit;
   end;
 
@@ -2953,7 +3112,7 @@ var
   startPtr, endPtr: PChar;
   charCount: SizeInt;
 begin
-  BigIntInit(Result);
+  Result.Init;
   ResAddr := P;
   if (P = nil) or (P^ = #0) then
   begin
@@ -2962,7 +3121,7 @@ begin
 
   if not _ScanNumber(P, 16, startPtr, endPtr, charCount) then
   begin
-    BigIntInit(Result);
+    Result.Init;
     Exit;
   end;
 
@@ -2975,7 +3134,7 @@ var
   startPtr, endPtr: PChar;
   charCount: SizeInt;
 begin
-  BigIntInit(Result);
+  Result.Init;
   ResAddr := P;
   if (P = nil) or (P^ = #0) then
   begin
@@ -2984,7 +3143,7 @@ begin
 
   if not _ScanNumber(P, 2, startPtr, endPtr, charCount) then
   begin
-    BigIntInit(Result);
+    Result.Init;
     Exit;
   end;
 
@@ -3037,7 +3196,6 @@ var
   totalBits: integer;
   powerOf2: TBigInt;
   val: Int64;
-  isSmall: boolean;
   tempP: PWideChar;
   tempCount: integer;
 begin
@@ -3160,7 +3318,7 @@ var
   p_temp: PWideChar;
   isNegative: boolean;
 begin
-  BigIntInit(Result);
+  Result.Init;
   ResAddr := P;
   if (P = nil) or (P^ = #0) then
   begin
@@ -3184,7 +3342,7 @@ begin
 
   if not _ScanNumberW(p_temp, 10, startPtr, endPtr, charCount) then
   begin
-    BigIntInit(Result);
+    Result.Init;
     Exit;
   end;
 
@@ -3200,7 +3358,7 @@ var
   startPtr, endPtr: PWideChar;
   charCount: SizeInt;
 begin
-  BigIntInit(Result);
+  Result.Init;
   ResAddr := P;
   if (P = nil) or (P^ = #0) then
   begin
@@ -3209,7 +3367,7 @@ begin
 
   if not _ScanNumberW(P, 16, startPtr, endPtr, charCount) then
   begin
-    BigIntInit(Result);
+    Result.Init;
     Exit;
   end;
 
@@ -3222,7 +3380,7 @@ var
   startPtr, endPtr: PWideChar;
   charCount: SizeInt;
 begin
-  BigIntInit(Result);
+  Result.Init;
   ResAddr := P;
   if (P = nil) or (P^ = #0) then
   begin
@@ -3231,7 +3389,7 @@ begin
 
   if not _ScanNumberW(P, 2, startPtr, endPtr, charCount) then
   begin
-    BigIntInit(Result);
+    Result.Init;
     Exit;
   end;
 
@@ -3385,6 +3543,7 @@ end;
 
 function BigIntAbs(const a: TBigInt): TBigInt;
 begin
+  Result.Init;
   BigIntCopy(Result, a);
   if Result.Sign <> 0 then
     Result.Sign := 1;

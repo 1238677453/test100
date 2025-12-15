@@ -8,7 +8,7 @@
       <Unit>
         <Filename Value="main.pas"/>
         <IsPartOfProject Value="True"/>
-        <CursorPos X="7" Y="7"/>
+        <CursorPos X="6" Y="7"/>
         <UsageCount Value="20"/>
         <Loaded Value="True"/>
       </Unit>
@@ -16,40 +16,14 @@
         <Filename Value="bigint.pas"/>
         <IsVisibleTab Value="True"/>
         <EditorIndex Value="1"/>
-        <TopLine Value="31"/>
-        <CursorPos X="12" Y="43"/>
         <UsageCount Value="10"/>
         <Loaded Value="True"/>
       </Unit>
     </Units>
-    <JumpHistory HistoryIndex="6">
+    <JumpHistory>
       <Position>
         <Filename Value="main.pas"/>
-        <Caret Line="20" Column="46"/>
-      </Position>
-      <Position>
-        <Filename Value="main.pas"/>
-        <Caret Line="78" Column="81" TopLine="59"/>
-      </Position>
-      <Position>
-        <Filename Value="main.pas"/>
-        <Caret Line="113" Column="81" TopLine="94"/>
-      </Position>
-      <Position>
-        <Filename Value="main.pas"/>
-        <Caret Line="121" Column="81" TopLine="103"/>
-      </Position>
-      <Position>
-        <Filename Value="main.pas"/>
-        <Caret Line="137" Column="81" TopLine="118"/>
-      </Position>
-      <Position>
-        <Filename Value="main.pas"/>
-        <Caret Line="7" Column="7"/>
-      </Position>
-      <Position>
-        <Filename Value="bigint.pas"/>
-        <Caret Line="20" Column="67" TopLine="13"/>
+        <Caret Line="7" Column="6"/>
       </Position>
     </JumpHistory>
     <RunParams>

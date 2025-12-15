@@ -1184,7 +1184,7 @@ end;
 procedure TestUInt64Support;
 var
   a, b, expected_bi: TBigInt;
-  u, v, expected_u64: UInt64;
+  u: UInt64;
 begin
   a.Init; b.Init; expected_bi.Init;
   Writeln('--- Testing UInt64 Support ---');

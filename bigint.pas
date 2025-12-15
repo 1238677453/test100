@@ -26,6 +26,8 @@ type
   TDoubleDigit = uint64;
 
 const
+  { Минимальное количество "разрядов", выделяемых для нового числа. }
+  MIN_ALLOCATED_LIMBS = 4;
   { Количество бит в одном разряде. }
   DigitBits  = SizeOf(TDigit) * 8;
   { Максимальное значение, которое может хранить один разряд. }
@@ -756,7 +758,7 @@ begin
   begin
     newCapacity := currentCapacity;
     if newCapacity = 0 then
-      newCapacity := 4;
+      newCapacity := MIN_ALLOCATED_LIMBS;
     while newCapacity < newLength do
     begin
       // Для небольших чисел удваиваем буфер для скорости (меньше перераспределений).
@@ -1844,16 +1846,14 @@ begin
   BigIntSHL(p_p1^, p_p1^, m * DigitBits);
 
   temp.Init;
-  _BigIntAddAbs_Unsafe(temp, p_p0^, p_p1^);
-  _BigIntAddAbs_Unsafe(temp, temp, p_p2^);
-  Normalize(temp);
+  _BigIntAddAbs_Unsafe(res, p_p0^, p_p1^);
+  _BigIntAddAbs_Unsafe(res, res, p_p2^);
+  Normalize(res);
 
   if a.Sign = b.Sign then
-    temp.Sign := 1
+    res.Sign := 1
   else
-    temp.Sign := -1;
-
-  BigIntCopy(res, temp);
+    res.Sign := -1;
 end;
 
 { Функция-обёртка для умножения Карацубы. Выделяет временную память. }
@@ -1876,10 +1876,6 @@ begin
 
   _BigIntMulKaratsubaRecursive(res, a, b, scratch);
 
-  if a.Sign = b.Sign then
-    res.Sign := 1
-  else
-    res.Sign := -1;
   Normalize(res);
 end;
 
@@ -2053,55 +2049,96 @@ end;
 }
 function BigIntToBasePow2Str(const a: TBigInt; bitsPerChar: cardinal; const chars: string): string;
 var
-  temp, remainder, powerOf2, a_abs: TBigInt;
-  res:   string;
-  remainder_val: TDigit;
-  Width: integer;
+  totalBits, i, charCount, bitIndex: integer;
+  digit, mask, currentDigitValue: TDigit;
+  bitsInCurrent, charIndex: integer;
+  temp: TBigInt;
+  resStr: string;
+  carry: boolean;
 begin
   if not Assigned(a.Digits) or (a.Sign = 0) then Exit('0');
 
-  temp.Init;
-  remainder.Init;
-
   if a.Sign = 1 then
   begin
-    BigIntCopy(temp, a);
-  end
-  else // a.Sign = -1
-  begin
-    a_abs.Init;
-    BigIntCopy(a_abs, a);
-    a_abs.Sign := 1;
-
-    Width := bitCount(a_abs);
-    if not IsPowerOfTwo(a_abs) then
-      Inc(Width);
-
-    Width := RoundUpToStandardWidth(Width);
-
-    powerOf2.Init;
-    SetIntLength(powerOf2, 1);
-    powerOf2.Digits[0] := 1;
-    powerOf2.Sign      := 1;
-    BigIntSHL(powerOf2, powerOf2, Width);
-
-    BigIntSub(temp, powerOf2, a_abs);
+    totalBits := bitCount(a);
+    charCount := (totalBits + bitsPerChar - 1) div bitsPerChar;
+    if charCount = 0 then charCount := 1;
+    SetLength(resStr, charCount);
+    bitIndex := 0;
+    for i := charCount downto 1 do
+    begin
+        digit := 0;
+        for bitsInCurrent := 0 to bitsPerChar - 1 do
+        begin
+            if bitIndex < totalBits then
+            begin
+                if ((a.Digits[bitIndex div DigitBits] shr (bitIndex mod DigitBits)) and 1) = 1 then
+                    digit := digit or (1 shl bitsInCurrent);
+                Inc(bitIndex);
+            end;
+        end;
+        resStr[i] := chars[digit + 1];
+    end;
+    Result := resStr;
+    Exit;
   end;
 
-  res := '';
-  if temp.Sign = 0 then res := '0';
-  while temp.Sign <> 0 do
+  // --- Обработка отрицательных чисел (дополнительный код) ---
+  temp.Init;
+  BigIntCopy(temp, a);
+  temp.Sign := 1; // |a|
+
+  totalBits := bitCount(temp);
+  if not IsPowerOfTwo(temp) then Inc(totalBits);
+  totalBits := RoundUpToStandardWidth(totalBits);
+
+  // NOT |a|
+  for i := 0 to temp.Length - 1 do
+    temp.Digits[i] := not temp.Digits[i];
+
+  // + 1
+  carry := True;
+  for i := 0 to temp.Length - 1 do
+    if carry then
+    begin
+      if temp.Digits[i] = MaxDigit then
+        temp.Digits[i] := 0
+      else
+      begin
+        Inc(temp.Digits[i]);
+        carry := False;
+      end;
+    end
+    else Break;
+
+  // Преобразуем в строку
+  charCount := (totalBits + bitsPerChar - 1) div bitsPerChar;
+  SetLength(Result, charCount);
+  charIndex := charCount;
+  bitsInCurrent := 0;
+  currentDigitValue := 0;
+
+  for i := 0 to totalBits - 1 do
   begin
-    BigIntModPow2(remainder, temp, bitsPerChar);
-    if remainder.Sign = 0 then
-      remainder_val := 0
+    if i < (temp.Length * DigitBits) then
+      digit := (temp.Digits[i div DigitBits] shr (i mod DigitBits)) and 1
     else
-      remainder_val := remainder.Digits[0];
-    res := chars[remainder_val + 1] + res;
-    BigIntDivPow2(temp, temp, bitsPerChar);
-  end;
+      digit := 1; // Знаковое расширение
 
-  Exit(res);
+    currentDigitValue := currentDigitValue or (digit shl bitsInCurrent);
+    Inc(bitsInCurrent);
+
+    if bitsInCurrent = bitsPerChar then
+    begin
+      if charIndex > 0 then
+      begin
+        Result[charIndex] := chars[currentDigitValue + 1];
+        Dec(charIndex);
+      end;
+      bitsInCurrent := 0;
+      currentDigitValue := 0;
+    end;
+  end;
 end;
 
 { Преобразует TBigInt в шестнадцатеричную строку.

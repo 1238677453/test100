@@ -39,35 +39,13 @@
       <Filename Value="main"/>
     </Target>
     <SearchPaths>
-      <IncludeFiles Value="$(ProjOutDir)"/>
       <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)"/>
     </SearchPaths>
-    <Parsing>
-      <Style Value="1"/>
-    </Parsing>
-    <CodeGeneration>
-      <SmartLinkUnit Value="True"/>
-      <RelocatableUnit Value="True"/>
-      <Optimizations>
-        <OptimizationLevel Value="4"/>
-      </Optimizations>
-    </CodeGeneration>
     <Linking>
       <Debugging>
-        <GenerateDebugInfo Value="False"/>
-        <RunWithoutDebug Value="True"/>
         <DebugInfoType Value="dsDwarf3"/>
       </Debugging>
-      <LinkSmart Value="True"/>
     </Linking>
-    <Other>
-      <CustomOptions Value="-al
--an
--ao
--ar
--aR
--at"/>
-    </Other>
   </CompilerOptions>
   <Debugging>
     <Exceptions>

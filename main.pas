@@ -53,8 +53,7 @@ var
     end
     else
     begin
-      Writeln('  [FAIL] ', message, ' - Expected: ', expected, ', Got: ', Value)
-;
+      Writeln('  [FAIL] ', message, ' - Expected: ', expected, ', Got: ', Value);
     end;
   end;
 
@@ -71,12 +70,12 @@ var
     end
     else
     begin
-      Writeln('  [FAIL] ', message, ' - Expected: ', UIntToStr(expected), ', Got: ', UIntToStr(Value));
+      Writeln('  [FAIL] ', message, ' - Expected: ', UIntToStr(expected), ', Got: ',
+        UIntToStr(Value));
     end;
   end;
 
-  procedure Check(Value: TBigInt; expected: TBigInt; const message: string); ove
-rload;
+  procedure Check(Value: TBigInt; expected: TBigInt; const message: string); overload;
   var
     condition: boolean;
   begin
@@ -94,8 +93,7 @@ rload;
     end;
   end;
 
-  procedure Check(Value: TBigInt; Ptr: PChar; StartPtr: PChar; ExpectedPtrOffset
-: PtrInt; ExpectedValue: TBigInt; const message: string); overload;
+  procedure Check(Value: TBigInt; Ptr: PChar; StartPtr: PChar; ExpectedPtrOffset: PtrInt; ExpectedValue: TBigInt; const message: string); overload;
   var
     val_cond, ptr_cond: boolean;
   begin
@@ -111,17 +109,14 @@ rload;
     begin
        Write('  [FAIL] ', message);
        if not val_cond then
-         Write(' - VALUE - Expected: ', BigIntToStr(ExpectedValue), ', Got: ', B
-igIntToStr(Value));
+         Write(' - VALUE - Expected: ', BigIntToStr(ExpectedValue), ', Got: ', BigIntToStr(Value));
        if not ptr_cond then
-         Write(' - POINTER - Expected offset: ', ExpectedPtrOffset, ', Got: ', (
-Ptr - StartPtr));
+         Write(' - POINTER - Expected offset: ', ExpectedPtrOffset, ', Got: ', (Ptr - StartPtr));
        Writeln;
     end;
   end;
 
-  procedure Check(Value: TBigInt; Ptr: PWideChar; StartPtr: PWideChar; ExpectedP
-trOffset: PtrInt; ExpectedValue: TBigInt; const message: string); overload;
+  procedure Check(Value: TBigInt; Ptr: PWideChar; StartPtr: PWideChar; ExpectedPtrOffset: PtrInt; ExpectedValue: TBigInt; const message: string); overload;
   var
     val_cond, ptr_cond: boolean;
   begin
@@ -137,11 +132,9 @@ trOffset: PtrInt; ExpectedValue: TBigInt; const message: string); overload;
     begin
        Write('  [FAIL] ', message);
        if not val_cond then
-         Write(' - VALUE - Expected: ', BigIntToStr(ExpectedValue), ', Got: ', B
-igIntToStr(Value));
+         Write(' - VALUE - Expected: ', BigIntToStr(ExpectedValue), ', Got: ', BigIntToStr(Value));
        if not ptr_cond then
-         Write(' - POINTER - Expected offset: ', ExpectedPtrOffset, ', Got: ', (
-Ptr - StartPtr));
+         Write(' - POINTER - Expected offset: ', ExpectedPtrOffset, ', Got: ', (Ptr - StartPtr));
        Writeln;
     end;
   end;
@@ -958,7 +951,7 @@ Ptr - StartPtr));
   begin
     a.Init; expected.Init;
     Writeln('--- Testing Stream Parsers ---');
-
+    
     // --- PChar Decimal ---
     s := '12345 and the rest';
     p := PChar(s);
@@ -971,7 +964,7 @@ Ptr - StartPtr));
     BigIntFromStr(expected, '-987');
     a := ParseDecimalBigIntFromPChar(p, res_p);
     Check(a, res_p, p, 4, expected, 'PChar Dec: Simple negative');
-
+    
     s := '1 2 3 4 5 and the rest';
     p := PChar(s);
     BigIntFromStr(expected, '12345');
@@ -1002,7 +995,7 @@ Ptr - StartPtr));
     BigIntFromInt64(expected, 32767);
     a := ParseHexBigIntFromPChar(p, res_p);
     Check(a, res_p, p, 5, expected, 'PChar Hex: Positive with space');
-
+    
     s := '8000 trailing'; // -32768
     p := PChar(s);
     BigIntFromInt64(expected, -32768);
@@ -1015,7 +1008,7 @@ Ptr - StartPtr));
     BigIntFromInt64(expected, -1);
     a := ParseBinBigIntFromPChar(p, res_p);
     Check(a, res_p, p, 8, expected, 'PChar Bin: Negative -1');
-
+    
     s := '0111 1111 1111 1111'; // 32767
     p := PChar(s);
     BigIntFromInt64(expected, 32767);
@@ -1034,7 +1027,7 @@ Ptr - StartPtr));
     BigIntFromInt64(expected, 0);
     a := ParseDecimalBigIntFromPChar(p, res_p);
     Check(a, res_p, p, 0, expected, 'PChar Dec: Sign only');
-
+    
     s := '   -   ';
     p := PChar(s);
     BigIntFromInt64(expected, 0);
@@ -1063,7 +1056,7 @@ Ptr - StartPtr));
   begin
     a.Init; expected.Init;
     Writeln('--- Testing Stream Parsers (WideChar) ---');
-
+    
     // --- PWideChar Decimal ---
     s := '12345 and the rest';
     p := PWideChar(s);
@@ -1076,7 +1069,7 @@ Ptr - StartPtr));
     BigIntFromStr(expected, '-987');
     a := ParseDecimalBigIntFromPWideChar(p, res_p);
     Check(a, res_p, p, 4, expected, 'PWideChar Dec: Simple negative');
-
+    
     s := '   - 9 8 7 stop';
     p := PWideChar(s);
     BigIntFromStr(expected, '-987');
@@ -1261,7 +1254,7 @@ var
 begin
   a.Init; limit.Init; zero.Init;
   Writeln('--- Testing Random Function ---');
-
+  
   BigIntFromInt64(zero, 0);
 
   // Test BigIntRandom
@@ -1271,8 +1264,7 @@ begin
   begin
     a := BigIntRandom(limit);
     // Проверяем, что 0 <= a < limit
-    Check((BigIntCompare(a, zero) >= 0) and (BigIntCompare(a, limit) < 0), '  Ra
-ndom number ' + IntToStr(i) + ' in range [0..999]');
+    Check((BigIntCompare(a, zero) >= 0) and (BigIntCompare(a, limit) < 0), '  Random number ' + IntToStr(i) + ' in range [0..999]');
   end;
 
   BigIntFromUInt64(limit, High(UInt64));
